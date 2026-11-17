@@ -1,0 +1,11 @@
+# Inference dependencies only (infer.py) — Raspberry Pi 4, 64-bit OS, CPU
+# scikit-learn ต้องเป็นเวอร์ชันเดียวกับเครื่องที่ train (head.joblib เป็น pickle ของ sklearn)
+#   ตรวจเวอร์ชันบนเครื่อง train:  pip show scikit-learn
+#   แล้วแก้บรรทัด scikit-learn ด้านล่างเป็น ==<เวอร์ชันนั้น>
+torch>=2.0
+torchvision>=0.15
+numpy
+opencv-python-headless
+pillow
+scikit-learn
+joblib

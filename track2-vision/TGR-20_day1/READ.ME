@@ -1,0 +1,111 @@
+โครงสร้างไฟล์
+TGR-20_day1/
+├── README.md
+├── requirements.txt      # dependencies สำหรับ inference เท่านั้น
+├── infer.py              # inference (ทำงานได้ด้วยตัวเอง ไม่ import ไฟล์อื่นในโปรเจกต์)
+├── train.py              # train + 3-fold cross-validation
+├── crop_beans.py         # preprocessing สำหรับ train: ตัดเมล็ดทีละเม็ด + คำนวณ feature สี/รูปทรง
+├── weights/
+│   ├── best.pt           # backbone MobileNetV3-Small + รายชื่อคลาส + ชนิดโมเดล
+│   └── head.joblib       # ตัวจำแนก (StandardScaler + Logistic Regression) — จำเป็นสำหรับโมเดล hybrid
+└── outputs/
+    ├── predictions.csv   # filename,class
+    └── good/ shell/ black/ husk/ broken/ parchment/ immature/
+ไฟล์ weights ที่จำเป็น
+ไฟล์	จำเป็น	หน้าที่
+weights/best.pt	✅ เสมอ	น้ำหนัก MobileNetV3-Small, รายชื่อคลาส, ชนิดหัวโมเดล (head)
+weights/head.joblib	✅ เมื่อ head เป็น hybrid หรือ hand	StandardScaler + Logistic Regression ที่ train กับเมล็ดกาแฟ
+
+infer.py อ่านชนิดโมเดลจาก best.pt แล้วโหลด head.joblib เองถ้าจำเป็น
+
+การติดตั้ง (Raspberry Pi 4, Raspberry Pi OS 64-bit)
+bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+scikit-learn ใน requirements.txt ต้องเป็นเวอร์ชันเดียวกับเครื่องที่ใช้ train เพราะ head.joblib เป็นไฟล์ pickle ของ scikit-learn
+
+Inference
+bash
+python infer.py --input test/ --weights weights/ --out outputs/
+อาร์กิวเมนต์	ความหมาย
+--input	โฟลเดอร์ภาพ หรือไฟล์ภาพเดี่ยว (.jpg .jpeg .png ไม่สนตัวพิมพ์เล็ก/ใหญ่)
+--weights	โฟลเดอร์ weights/
+--out	โฟลเดอร์ผลลัพธ์ (สร้างให้ถ้ายังไม่มี ต้องไม่อยู่ในโฟลเดอร์ input)
+
+ผลลัพธ์
+
+outputs/predictions.csv (UTF-8) มีคอลัมน์ filename,class ภาพละ 1 แถว
+ภาพต้นฉบับถูก คัดลอก ไปไว้ในโฟลเดอร์ของคลาสที่ทาย (ไม่ย้ายหรือลบต้นฉบับ)
+
+การจัดการ error: ถ้าไม่พบ input หรือ weights, ไม่มีภาพในโฟลเดอร์, เปิดภาพไม่ได้, ชื่อไฟล์ซ้ำ หรือ output ผิดรูปแบบ โปรแกรมจะพิมพ์ข้อความ error และจบด้วย exit code ที่ไม่ใช่ 0 (ไม่ข้ามภาพ)
+
+ขั้นตอนภายใน infer.py (ต่อภาพ)
+หมุนภาพตาม EXIF
+White balance โดยใช้กระดาษพื้นหลังเป็นสีอ้างอิง
+แยกเมล็ด: flat-field ลบแสงไม่สม่ำเสมอ → threshold ช่อง b ของ Lab (Otsu) รวมกับ mask บริเวณมืด (เมล็ด black) → morphology → กรองตามขนาด
+ตัดทีละเมล็ดเป็นสี่เหลี่ยม 160×160 px แทนพื้นหลังด้วยสีเทาเรียบ และคำนวณ feature สี/รูปทรง 12 ค่า
+ดึง feature จาก MobileNetV3-Small (576 ค่า) รวมกับ feature 12 ค่า → Logistic Regression
+เฉลี่ยความน่าจะเป็นของทุกเมล็ดในภาพ → 1 คลาสต่อภาพ
+
+ไม่มีการ train หรือจูนกับข้อมูล test, ไม่มี random augmentation และไม่มี test-time augmentation
+
+Preprocessing (สำหรับ train)
+
+จัดภาพ train เป็นโฟลเดอร์ตามคลาส:
+
+raw/
+├── black/  broken/  good/  husk/  immature/  parchment/  shell/
+bash
+python crop_beans.py --src raw/ --dst crops/
+
+ได้ crops/<class>/<ภาพ>_<เลขเมล็ด>.jpg และ crops/features.csv (feature สี/รูปทรงต่อเมล็ด) ตรวจจำนวนเมล็ดที่พิมพ์ออกมาให้ตรงกับจำนวนในภาพจริง
+
+preprocessing ใน infer.py คัดลอกมาจาก crop_beans.py ทุกบรรทัด ถ้าแก้ไฟล์ใดไฟล์หนึ่งต้องแก้อีกไฟล์ให้ตรงกัน
+
+Training
+
+ติดตั้ง dependencies สำหรับ train (นอกเหนือจาก requirements.txt):
+
+bash
+pip install torch torchvision opencv-python scikit-learn pillow numpy joblib
+bash
+# 3-fold cross-validation (ไม่บันทึก weight)
+python train.py --crops crops/ --mode hybrid
+
+# train ด้วยข้อมูลทั้งหมด → weights/best.pt + weights/head.joblib
+python train.py --crops crops/ --mode hybrid --final
+
+ครั้งแรกที่รันจะดาวน์โหลด ImageNet weights ของ MobileNetV3-Small (~10 MB) อัตโนมัติ ใช้ GPU ถ้ามี (CUDA / Apple MPS) ไม่มีก็ใช้ CPU ได้ (ข้อมูลชุดนี้ใช้เวลาไม่กี่นาที)
+
+ตัวเลือก	ความหมาย
+--mode	hybrid (ที่ใช้ส่ง), probe, hand, finetune
+--final	train ด้วยข้อมูลทั้งหมดแล้วบันทึก weight
+--C	ค่า regularization ของ Logistic Regression (ค่าเริ่มต้น 0.5)
+--pca N	ย่อ feature CNN เหลือ N มิติก่อนรวม (โหมด hybrid)
+--e1 --e2 --lr-bb	จำนวน epoch ขั้น 1 / ขั้น 2 และ learning rate ของ backbone (โหมด finetune)
+--wdir	โฟลเดอร์ที่บันทึก weight (ค่าเริ่มต้น weights)
+โมเดลและการเลือกโมเดล
+
+ข้อมูล: 7 คลาส × 3 ภาพ (ภาพละ ~8–9 เมล็ด) = 175 เมล็ด
+
+Validation: 3-fold cross-validation แบ่งตาม ภาพต้นฉบับ (fold k ใช้ภาพที่ k ของทุกคลาสเป็น validation) เพื่อไม่ให้เมล็ดจากภาพเดียวกันอยู่ทั้งใน train และ validation
+
+Augmentation ตอน train (เฉพาะโหมดที่ใช้ CNN): หมุน 0–360°, flip, RandomResizedCrop (scale ≥ 0.85), ColorJitter เบา ๆ (hue ≤ 0.02 เพราะสีเป็นข้อมูลสำคัญของคลาส), Gaussian blur
+
+โหมด	วิธี	Bean acc	Image acc
+finetune	fine-tune MobileNetV3-Small 2 ขั้น	0.647	0.810
+probe	ตรึง backbone + Logistic Regression	0.726	0.905
+hand	feature สี/รูปทรง 12 ค่า + Logistic Regression	0.748	0.952
+hybrid ✅	feature CNN 576 ค่า + สี/รูปทรง 12 ค่า → StandardScaler → Logistic Regression	0.774	0.952
+
+Bean acc = ความแม่นรายเมล็ด, Image acc = ความแม่นรายภาพหลังเฉลี่ยทุกเมล็ด (เฉลี่ย 3 fold)
+
+เหตุผลที่เลือก hybrid: คะแนนสูงสุด และไม่ปลด backbone มาฝึกจึง overfit น้อยเมื่อข้อมูลมีจำกัด (fine-tune ทั้งโมเดลได้ผลแย่ที่สุด) feature สี/รูปทรงช่วยแยกคลาสที่ต่างกันด้วยสีและรูปทรง ส่วน feature CNN ช่วยเรื่องพื้นผิว
+
+คู่คลาสที่ยังสับสน: good ↔ immature, immature ↔ parchment (สีใกล้กัน), black ↔ husk (สีเข้มทั้งคู่), shell ↔ broken (รูปทรง)
+
+ข้อจำกัด
+feature ขนาดและรูปทรงสมมติว่าภาพ test ถ่ายด้วยกล้อง ระยะ และความละเอียดใกล้เคียงภาพ train (ภาพเต็ม ~1932×2576 px บนพื้นกระดาษขาว)
+การแยกเมล็ดออกแบบสำหรับเมล็ดที่วางห่างกัน เมล็ดที่ติดกันอาจถูกนับรวมเป็นก้อนเดียว
