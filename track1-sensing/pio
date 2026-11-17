@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Wrapper: always use the working PlatformIO Core (penv), never /usr/bin/pio (apt 4.3.4, broken).
+# Usage: ./pio run -e esp32s3_usb -t upload
+set -euo pipefail
+
+PIO_BIN="${PLATFORMIO_BIN:-$HOME/.platformio/penv/bin/pio}"
+
+if [[ ! -x "$PIO_BIN" ]]; then
+  echo "error: PlatformIO not found at $PIO_BIN" >&2
+  echo "       set PLATFORMIO_BIN=/path/to/pio or install PlatformIO Core 6.x" >&2
+  exit 127
+fi
+
+exec "$PIO_BIN" "$@"
