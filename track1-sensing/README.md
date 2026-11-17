@@ -33,9 +33,9 @@ working even if the symlink or `PATH` changes. Override with `PLATFORMIO_BIN=/pa
 
 | Task | Command |
 |------|---------|
-| Build | `pio run -e esp32s3_usb` |
-| Upload | `pio run -e esp32s3_usb -t upload` |
-| Serial monitor | `pio device monitor -e esp32s3_usb` |
+| Build + upload competition firmware | `pio run -e esp32s3_usb -t upload` |
+| Build + upload calibration firmware | `pio run -e esp32s3_cal -t upload` |
+| Serial monitor (9600 baud) | `pio device monitor -e esp32s3_usb` |
 | Clean | `pio run -t clean` |
 | List ports | `pio device list` |
 
@@ -49,11 +49,17 @@ Description: USB JTAG/serial debug unit
 
 ## Environments
 
-- **`esp32s3_usb`** (default) — native USB-OTG port, enumerates as `/dev/ttyACM0`
-  (USB ID `303a:1001`, "Espressif USB JTAG/serial debug unit"). `ARDUINO_USB_CDC_ON_BOOT=1`,
-  so `Serial` goes over USB CDC.
-- **`esp32s3_uart`** — the UART bridge port (`/dev/ttyUSB0`, CP2102/CH343) if you use the
-  other USB socket. `ARDUINO_USB_CDC_ON_BOOT=0`.
+| Env | Purpose |
+|-----|---------|
+| `esp32s3_usb` (default) | **Competition firmware.** Prints only the required format. Native USB port `/dev/ttyACM0` (USB ID `303a:1001`), `ARDUINO_USB_CDC_ON_BOOT=1`. |
+| `esp32s3_cal` | **Calibration firmware.** Same measurement, but prints raw timing stats (`t`, `sd`, `min`, `max`, `C`, elapsed ms). Also triggers on any key sent over serial, so you can measure without pressing the button. |
+| `esp32s3_uart` | Competition firmware over the UART bridge port (`/dev/ttyUSB0`), `ARDUINO_USB_CDC_ON_BOOT=0`. |
+
+All envs: `monitor_speed = 9600` (rule 3.2) and `CORE_DEBUG_LEVEL=0` so no ESP log lines
+leak into the judged output.
+
+Native USB CDC ignores the baud setting (any terminal speed works); if judges need a genuine
+9600-baud UART, use `esp32s3_uart` on the bridge port.
 
 ## N16R8 configuration
 
@@ -72,18 +78,54 @@ If `PSRAM: not detected` shows up in the monitor, `memory_type` is the first thi
 
 ## What `src/main.cpp` does
 
-A six-stage self-test, run once at boot, then an idle loop with a 2 s status line:
+Competition firmware for **method 1 (inverting comparator)**, chosen in
+[docs/competition-requirements.md](docs/competition-requirements.md).
 
-1. **Identity** — chip, flash, PSRAM, MAC, SDK, build timestamp, reset reason
-2. **NVS / flash write** — a boot counter in NVS; it must increase by 1 on every reset
-3. **PSRAM stress** — `ps_malloc(4 MB)`, write a hash pattern, verify every word
-4. **I2C scan** — `SDA=GPIO8 SCL=GPIO9`, lists any device at 0x08..0x77
-5. **RGB LED** — cycles red/green/blue/yellow/off on `GPIO48`
-6. **Serial echo** — anything you type comes back UPPERCASED (host → device direction)
+Wiring (LM393 powered from 5 V, everything the ESP32 sees stays at 3.3 V):
 
-Adjust `RGB_LED_PIN`, `I2C_SDA`, `I2C_SCL` at the top of the file to match your wiring.
+```
+GPIO5 (CHARGE) ── R 1MΩ ──┬── LM393 pin 2 (IN1−)
+                          └── Cx ── GND
+3.3V ── trimpot 10k ── GND,  wiper (≈2.08 V) ── LM393 pin 3 (IN1+)   [+ optional 0.1µF to GND]
+LM393 pin 1 (OUT1) ── R 10k ── 3.3V      ← NEVER pull up to 5 V
+                   └── GPIO6 (COMP)
+LM393 pin 8 ── 5V,  pin 4 ── GND,  pin 5 ── GND,  pin 6 ── pin 3    (unused half locked)
+GPIO4 (BUTTON) ── switch ── GND           (debounced in software)
+GPIO48 = on-board RGB LED
+```
 
-## Verified result (2026-11-17)
+Per press-and-release:
+
+1. Software debounce (30 ms stable), fires on **release** only; presses during a measurement
+   are discarded (`buttonResync()`).
+2. Wait 200 ms so the hand is away from the sensor.
+3. 10 warm-up + **500 charge cycles**: discharge 1 ms, then with interrupts off, set CHARGE
+   high and count CPU cycles (240 MHz, 4.17 ns/tick) until the comparator pulls COMP low.
+   500 µs timeout per cycle.
+4. Sort, drop 10 % from each end, take the mean → `t` in µs.
+5. `C = CAL_SLOPE_PF_PER_US · t + CAL_OFFSET_PF` (theory with 1 MΩ and Vref = 0.632·Vcc:
+   1 µs = 1 pF; replace with the fit from the 5/10/15/20 pF reference caps).
+6. Print the exact format, then light the LED white for 200 ms. If fewer than half the cycles
+   switched, nothing is printed (no made-up values).
+
+Edit the `CONFIG` block at the top of `src/main.cpp`:
+
+- `TEAM_CODE` — your real team code
+- `CAL_SLOPE_PF_PER_US`, `CAL_OFFSET_PF` — from calibration
+- `OUTPUT_MOISTURE` — `0` for 18 Nov (pF), `1` for 20 Nov (moisture %), plus the
+  `MOIST_*` fit
+
+Output (rule 3.5):
+
+```
+"TGR-01"
+Capacitance = 10.00 pF
+
+```
+
+The earlier hardware self-test lives in `examples/selftest/main.cpp` (not built).
+
+## Self-test result (2026-11-17, `examples/selftest`)
 
 ```
 [1] chip : ESP32-S3 rev0, 2 cores @ 240 MHz
@@ -100,9 +142,10 @@ RAM 5.9% (19,372 B), Flash 4.5% (297,085 B of 6.25 MB app partition).
 
 ## Notes
 
-- The on-board LED pin is set to `LED_PIN 2`. DevKitC-1 boards use an addressable RGB LED on
-  GPIO 38/48 depending on revision — if nothing blinks, the serial heartbeat is still the
-  authoritative connectivity check.
+- The on-board LED is the addressable RGB LED on `GPIO48` (DevKitC-1 v1.1; v1.0 boards use
+  GPIO38). Change `LED_PIN` if it does not light — rule 3.4 requires it to be visible.
+- Pins to avoid on N16R8: 19/20 (USB), 26–32 (flash), 35–37 (octal PSRAM), 0/3/45/46
+  (strapping), 43/44 (UART0).
 - Toolchains and platform packages live in the shared `~/.platformio` core dir
   (platform-espressif32 **6.12.0**, Arduino core **2.0.17** / ESP-IDF 4.4.7). Kept as-is
   deliberately: it is the last release of the official `platformio/platform-espressif32`.
