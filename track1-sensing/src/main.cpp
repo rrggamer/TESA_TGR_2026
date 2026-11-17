@@ -8,7 +8,7 @@
 // ============================================================
 
 // Team code exactly as it must appear in the output (rule 3.5).
-#define TEAM_CODE "TGR-01"
+#define TEAM_CODE "TGR-20"
 
 // What the competition firmware reports:
 //   0 = capacitance contest (18 Nov)   -> Capacitance = xx.xx pF

@@ -118,7 +118,7 @@ Edit the `CONFIG` block at the top of `src/main.cpp`:
 Output (rule 3.5):
 
 ```
-"TGR-01"
+"TGR-20"
 Capacitance = 10.00 pF
 
 ```
