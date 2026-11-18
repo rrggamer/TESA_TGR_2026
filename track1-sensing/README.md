@@ -140,6 +140,23 @@ The earlier hardware self-test lives in `examples/selftest/main.cpp` (not built)
 
 RAM 5.9% (19,372 B), Flash 4.5% (297,085 B of 6.25 MB app partition).
 
+## Board quirks (YD-ESP32-S3 style, CH343P + native USB)
+
+The board is a DevKitC-1 clone with two USB-C ports. Two solder pads ship **open** and
+both had to be bridged:
+
+| Pad | Symptom while open | After bridging |
+|-----|--------------------|----------------|
+| `IN-OUT` (next to the 5V pin) | 5V pin only gives ~1.8 V → LM393 unpowered, COMP never switches | 5V pin outputs USB 5 V |
+| `RGB` (next to the RGB LED) | GPIO48 not connected to the LED → nothing lights | LED on GPIO48 works |
+
+After bridging `IN-OUT`, never feed external 5 V into the 5V pin while USB is plugged in.
+
+The CH343 port (USB ID `1a86:55d3`) also enumerates as `/dev/ttyACM0` (cdc_acm driver).
+Use the `*_uart` envs on that port. The TX/RX LEDs next to it blink on serial traffic and
+are not controllable from firmware. At reset the ROM prints a boot log at 115200, seen as
+one garbage line at 9600 — open the serial monitor after the board has booted.
+
 ## Notes
 
 - The on-board LED is the addressable RGB LED on `GPIO48` (DevKitC-1 v1.1; v1.0 boards use
