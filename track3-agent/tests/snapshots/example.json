@@ -1,0 +1,49 @@
+{
+ "_note": "ตัวอย่างออฟไลน์: state รูปแบบตามคู่มือ-API.md, ตัวเลขสูตร TV ตามสไลด์วันที่ 17. ชื่อ grade / timeline / calendar / lots / rfqs เป็นค่าสมมติ — ใช้ capture.py ดึงของจริงมาแทน",
+ "calendar": {
+  "rules": {
+   "p0": 120,
+   "defect_steps": [
+    {"max_defect_pct": 1, "grade": "G?1", "step": 1.08},
+    {"max_defect_pct": 3, "grade": "G?2", "step": 1.04},
+    {"max_defect_pct": 5, "grade": "G?3", "step": 1.00},
+    {"max_defect_pct": 7, "grade": "G?4", "step": 0.96},
+    {"max_defect_pct": 15, "grade": "G?5", "step": 0.85},
+    {"max_defect_pct": 100, "grade": "G?6", "step": 0.60}
+   ],
+   "moisture": {"ref": 12.5, "hard_limit": 15, "penalty_per_pp": 0.02, "hard_factor": 0.60},
+   "screen_factors": {"12": 0.92, "13": 0.97, "14": 1.00, "15": 1.00, "16": 1.03, "17": 1.03, "18": 1.06},
+   "bag_kg": 60,
+   "salvage_ratio": 0.8,
+   "timeline": {"rounds": 8}
+  },
+  "calendar": []
+ },
+ "state": {
+  "market": "offline", "team_id": "T00",
+  "phase": "ROUND_OPEN", "paused": false, "seconds_left": 200,
+  "round": {"round_id": "R2", "kind": "real", "number": 2, "of": 8, "counts_for_score": true, "calendar": "ปกติ"},
+  "lots": [
+   {"lot_id": "LOT-1", "kg_total": 300, "kg_remaining": 300, "kg_in_open_offers": 0, "kg_available": 300,
+    "sample": {"defect_pct": 5.56, "moisture_pct": 12.95, "screen": 13}},
+   {"lot_id": "LOT-2", "kg_total": 600, "kg_remaining": 600, "kg_in_open_offers": 0, "kg_available": 600,
+    "sample": {"defect_pct": 2.1, "moisture_pct": 11.8, "screen": 16}},
+   {"lot_id": "LOT-3", "kg_total": 240, "kg_remaining": 240, "kg_in_open_offers": 0, "kg_available": 240,
+    "sample": {"defect_pct": 9.0, "moisture_pct": 14.6, "screen": 12}}
+  ],
+  "rfqs": [
+   {"rfq_id": "R2-01", "buyer": "S", "buyer_type": "SPECIALTY", "kg": 300, "bags": 5,
+    "spec": {"max_defect_pct": 3.0, "max_moisture_pct": 12.5, "min_screen": 16}},
+   {"rfq_id": "R2-02", "buyer": "C", "buyer_type": "COMMERCIAL", "kg": 600, "bags": 10,
+    "spec": {"max_defect_pct": 7.0, "max_moisture_pct": 13.0, "min_screen": null}},
+   {"rfq_id": "R2-03", "buyer": "I", "buyer_type": "INSTANT", "kg": 480, "bags": 8,
+    "spec": {"max_defect_pct": 12.0, "max_moisture_pct": 15.0, "min_screen": null}}
+  ],
+  "my_open_offers": [],
+  "round_capacity_kg": 540, "capacity_left_kg": 540,
+  "appraisal_submitted": true,
+  "last_results": null,
+  "standings": {},
+  "salvage_ratio": 0.8
+ }
+}
