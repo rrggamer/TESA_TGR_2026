@@ -1,0 +1,9 @@
+# Inference-only dependencies (infer.py / bench_pi.py / score.py)
+# Raspberry Pi 4/5, 64-bit OS, CPU only -- no torch needed.
+# ncnn has aarch64 wheels for Python 3.11 (Bookworm) and 3.13 (Trixie).
+ncnn==1.0.20261020
+numpy>=1.24,<3
+opencv-python-headless>=4.8,<5
+pillow>=10
+pyyaml>=6
+scipy>=1.10        # score.py only (Hungarian matching); infer.py does not need it
