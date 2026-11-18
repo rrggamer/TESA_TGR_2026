@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).parent
-sys.path.insert(0, str(HERE.parent / "Coffee-TESA-starter"))
+import os  # noqa: E402
+sys.path.insert(0, str(HERE / "practice") if os.environ.get("SIM_PRACTICE") else str(HERE.parent / "Coffee-TESA-starter"))   # SIM_PRACTICE=1 -> ตัวซ้อม
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
