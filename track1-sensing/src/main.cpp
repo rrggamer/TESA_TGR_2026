@@ -22,6 +22,12 @@
 #define CAL_MODE 0
 #endif
 
+// 1 = also print "C = xx.xx pF" after each result (test builds only - the
+// extra line is not part of the rule 3.5 format, keep 0 for submission).
+#ifndef SHOW_C
+#define SHOW_C 0
+#endif
+
 // Calibration fit:  C[pF] = CAL_SLOPE * t[us] + CAL_OFFSET
 // With R1 = 1 MOhm and Vref = 0.632 * Vcc, theory gives 1 us == 1 pF.
 // Replace with the line fitted from the 5/10/15/20 pF reference caps;
@@ -32,13 +38,14 @@
 static const float CAL_SLOPE_PF_PER_US = 0.99835f;
 static const float CAL_OFFSET_PF       = -13.314f;
 
-// Moisture calibration (2026-11-18): sensor box, copper facing out, middle slot
-// only, 5 presses per bag (no re-pour). Points sorted by C; straight lines
-// between them, end segments extended outside. The 7.7 % bag was ~30 g, the
-// others ~33 g. C values depend on CAL_SLOPE / CAL_OFFSET above - change those
-// and these points must be remeasured.
-static const float MOIST_CAL_PF[]  = {16.5072f, 27.5188f, 30.8248f};
-static const float MOIST_CAL_PCT[] = { 7.7f,    11.3f,    14.5f};
+// Moisture calibration, 35 g fill (measured 2026-11-19, sensor box, copper
+// facing out, middle slot only). Mean C over 4-5 presses per bag:
+//   7.7 % -> 17.628 pF,  11.3 % -> 24.988 pF,  14.5 % -> 31.660 pF
+//   empty box -> 11.103 pF
+// Linear regression  M = 0.48468 * C - 0.8334   (R^2 = 0.99997)
+// C values depend on CAL_SLOPE / CAL_OFFSET above.
+static const float MOIST_SLOPE_PCT_PER_PF = 0.48468f;
+static const float MOIST_OFFSET_PCT       = -0.8334f;
 
 // ============================================================
 //  HARDWARE
@@ -230,14 +237,8 @@ static Measurement measureCapacitance() {
   return m;
 }
 
-// Piecewise-linear lookup through the calibration points.
 static float moisturePercent(float pF) {
-  const int n = sizeof(MOIST_CAL_PF) / sizeof(MOIST_CAL_PF[0]);
-  int i = 1;
-  while (i < n - 1 && pF > MOIST_CAL_PF[i]) i++;
-  const float slope = (MOIST_CAL_PCT[i] - MOIST_CAL_PCT[i - 1]) /
-                      (MOIST_CAL_PF[i] - MOIST_CAL_PF[i - 1]);
-  return MOIST_CAL_PCT[i - 1] + slope * (pF - MOIST_CAL_PF[i - 1]);
+  return MOIST_SLOPE_PCT_PER_PF * pF + MOIST_OFFSET_PCT;
 }
 
 // ============================================================
@@ -257,6 +258,9 @@ static void printResult(const Measurement &m) {
   Serial.printf("Moisture Level = %.2f %%\r\n", moisturePercent(m.pF));
 #else
   Serial.printf("Capacitance = %.2f pF\r\n", m.pF);
+#endif
+#if SHOW_C
+  Serial.printf("C = %.2f pF\r\n", m.pF);
 #endif
   Serial.println();
   Serial.flush();
