@@ -16,14 +16,29 @@ try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
-import strategy  # noqa: E402  ไฟล์แข่งจริง
+if os.environ.get("SIM_FILE"):                                       # SIM_FILE=practice/strategy_v4.py -> ไฟล์ที่ระบุ
+    import importlib.util  # noqa: E402
+    _spec = importlib.util.spec_from_file_location("strategy", str(HERE / os.environ["SIM_FILE"]))
+    strategy = importlib.util.module_from_spec(_spec); sys.modules["strategy"] = strategy; _spec.loader.exec_module(strategy)
+else:
+    import strategy  # noqa: E402  ไฟล์แข่งจริง
 import os  # noqa: E402
 for _kv in filter(None, os.environ.get("EXP", "").split(";")):      # ทดลองค่า (ไม่แก้ไฟล์จริง)
     _k, _v = _kv.split("=", 1); setattr(strategy, _k.strip(), eval(_v))
 
-BAG, ROUNDS = 60, 8
+BAG = 60
+DAY20 = "--day20" in sys.argv          # จำลองแบบสไลด์วันที่ 20: ซ้อม 2 + จริง 15 รอบ มีเทศกาล/ใกล้ปิดตลาด
+ROUNDS, PRACTICE = (15, 2) if DAY20 else (8, 0)
 DEMAND = float(sys.argv[sys.argv.index("--demand") + 1]) if "--demand" in sys.argv else 1.0   # ความต้องการ ÷ ของที่มี
-RULES = {"timeline": {"rounds": ROUNDS, "practice_rounds": 0}, "bag_kg": BAG}
+RULES = {"timeline": {"rounds": ROUNDS, "practice_rounds": PRACTICE}, "bag_kg": BAG}
+# ⚠ ตัวเลขถ่วงความต้องการเป็นค่าสมมติของการจำลองเท่านั้น (สไลด์บอกแค่ทิศทาง ไม่บอกตัวเลข) · strategy อ่านจากปฏิทินจริงตอนแข่ง
+FEST = float(sys.argv[sys.argv.index("--fest") + 1]) if "--fest" in sys.argv else 2.0     # Specialty ช่วงเทศกาล ×
+CAL = ([{"rounds": "1-5", "label": "ปกติ", "demand_weight": 1.0, "specialty_share": 0.2},
+        {"rounds": "6-8", "label": "เทศกาลกาแฟ", "demand_weight": 1.2, "specialty_share": 0.4},
+        {"rounds": "9-12", "label": "ปกติ", "demand_weight": 1.0, "specialty_share": 0.2},
+        {"rounds": "13-14", "label": "ใกล้ปิดตลาด", "demand_weight": 0.6, "specialty_share": 0.2},
+        {"rounds": "15", "label": "รอบสุดท้าย", "demand_weight": 0.4, "specialty_share": 0.2}] if DAY20 else [])
+W = {n: r["demand_weight"] for r in CAL for n in range(int(str(r["rounds"]).split("-")[0]), int(str(r["rounds"]).split("-")[-1]) + 1)}
 STATES = sorted((HERE / "practice/logs/autoplay").glob("states-1118-*.json"))
 CEIL = {"SPECIALTY": (1.20, 0.06), "COMMERCIAL": (1.06, 0.03), "INSTANT": (0.96, 0.03)}   # เพดานเฉลี่ย, ส่วนเบี่ยง (จากข้อมูลวันนี้)
 
@@ -60,22 +75,34 @@ def play(seed, mix, n_rivals=20):
     rivals = [mix[i % len(mix)] for i in range(n_rivals)]
     rival_stock = [sum(l["kg_total"] for l in lots)] * n_rivals
     mem, revenue, sold = Mem(), 0.0, 0
-    for rnd in range(1, ROUNDS + 1):
-        src = base[min(rnd - 1, len(base) - 1)]
+    avg_tv = sum(tv.values()) / len(tv)
+    schedule = [("practice", i) for i in range(1, PRACTICE + 1)] + [("real", i) for i in range(1, ROUNDS + 1)]
+    saved = None
+    for kind, rnd in schedule:
+        if kind == "real" and saved is not None:          # รอบซ้อมไม่ตัดสต็อก: คืนสต็อกก่อนเริ่มรอบจริง
+            for l, (a, r) in zip(lots, saved):
+                l["kg_available"], l["kg_remaining"] = a, r
+            rival_stock, revenue, sold, saved = saved_rival, 0.0, 0, None
+        if kind == "practice" and saved is None:
+            saved, saved_rival = [(l["kg_available"], l["kg_remaining"]) for l in lots], list(rival_stock)
+        rid = f"P{rnd}" if kind == "practice" else f"R{rnd}"
+        fest = W.get(rnd, 1.0) > 1.0 and kind == "real"
+        src = base[(rnd - 1) % len(base)]
         rfqs = []
         # ความต้องการรวมต่อรอบ = DEMAND × (ของทุกทีม ÷ รอบ) กระจายตามสัดส่วน RFQ เดิม -> มีการแย่งกันจริง
-        need = DEMAND * (n_rivals + 1) * sum(l["kg_total"] for l in lots) / ROUNDS
+        need = DEMAND * (n_rivals + 1) * sum(l["kg_total"] for l in lots) / ROUNDS * (W.get(rnd, 1.0) if kind == "real" else 1.0)
         orig = sum(q["kg"] for q in src["rfqs"]) or 1
         for q in src["rfqs"]:
             ceil.setdefault(q["buyer"], rng.gauss(*CEIL[q["buyer_type"]]))
-            kg = max(BAG, int(need * q["kg"] / orig) // BAG * BAG)
-            rfqs.append({**q, "rfq_id": f"R{rnd}-{q['rfq_id'].split('-')[1]}", "kg": kg, "bags": kg // BAG})
-        state = {"market": "sim", "phase": "ROUND_OPEN", "round": {"round_id": f"R{rnd}", "kind": "real", "number": rnd,
-                 "of": ROUNDS, "counts_for_score": True}, "lots": lots, "rfqs": rfqs,
+            boost = FEST if fest and q["buyer_type"] == "SPECIALTY" else 1.0
+            kg = max(BAG, int(need * q["kg"] / orig * boost) // BAG * BAG)
+            rfqs.append({**q, "rfq_id": f"{rid}-{q['rfq_id'].split('-')[1]}", "kg": kg, "bags": kg // BAG})
+        state = {"market": "sim", "phase": "ROUND_OPEN", "round": {"round_id": rid, "kind": kind, "number": rnd,
+                 "of": PRACTICE if kind == "practice" else ROUNDS, "counts_for_score": kind == "real"}, "lots": lots, "rfqs": rfqs,
                  "capacity_left_kg": cap, "round_capacity_kg": cap}
-        ctx = strategy.Context(RULES, [], tv, random.Random(seed * 100 + rnd), mem, None, 200)
+        ctx = strategy.Context(RULES, CAL, tv, random.Random(seed * 100 + rnd), mem, None, 200)
         offers, _ = strategy.decide(state, ctx)
-        mem.sent[f"R{rnd}"] = [{**o, "buyer_type": next(q["buyer_type"] for q in rfqs if q["rfq_id"] == o["rfq_id"]),
+        mem.sent[rid] = [{**o, "buyer_type": next(q["buyer_type"] for q in rfqs if q["rfq_id"] == o["rfq_id"]),
                                 "markup": round(o["price_per_kg"] / tv[o["lot_id"]], 3)} for o in offers]
         # คู่แข่ง: แต่ละรายเสนอ ~ลิมิตของตัวเอง กระจายไปยัง RFQ ที่รับประเภทนั้น
         book = {q["rfq_id"]: [] for q in rfqs}
@@ -108,7 +135,7 @@ def play(seed, mix, n_rivals=20):
                     got += fill; prices.append(b["m"])
                 if b["who"] == "me":
                     o = b["o"]
-                    my_res.append({"offer_id": "x", "round_id": f"R{rnd}", "rfq_id": q["rfq_id"], "lot_id": o["lot_id"],
+                    my_res.append({"offer_id": "x", "round_id": rid, "rfq_id": q["rfq_id"], "lot_id": o["lot_id"],
                                    "kg": o["kg"], "price_per_kg": o["price_per_kg"], "status": status, "filled_kg": fill})
                     if fill:
                         revenue += fill * o["price_per_kg"]; sold += fill
@@ -119,8 +146,10 @@ def play(seed, mix, n_rivals=20):
                     rival_stock[b["who"]] -= fill
             summary.append({"rfq_id": q["rfq_id"], "buyer": q["buyer"], "buyer_type": q["buyer_type"], "wanted_kg": want,
                             "bought_kg": got, "offers": len(book[q["rfq_id"]]),
-                            "price_min": None, "price_max": None, "price_avg": None})
-        mem.rounds.append({"round_id": f"R{rnd}", "kind": "real", "my_offers": my_res, "market_summary": summary})
+                            "price_min": min(prices) * avg_tv if prices else None,      # ประมาณเป็นบาท (ตัวคูณ × TV เฉลี่ย)
+                            "price_max": max(prices) * avg_tv if prices else None,
+                            "price_avg": sum(prices) / len(prices) * avg_tv if prices else None})
+        mem.rounds.append({"round_id": rid, "kind": kind, "my_offers": my_res, "market_summary": summary})
     tv_total = sum(l["kg_total"] * tv[l["lot_id"]] for l in lots)
     unsold = sum(l["kg_remaining"] * tv[l["lot_id"]] for l in lots)
     return (revenue + 0.8 * unsold) / tv_total, sold / sum(l["kg_total"] for l in lots)

@@ -11,6 +11,7 @@ price_per_kg = ตัวคูณ × TV ที่เราประเมิน
 """
 import json
 import math
+import os
 import random
 from dataclasses import dataclass, field
 
@@ -41,6 +42,7 @@ EDGE = {"defect_pct": 0.6, "moisture_pct": 0.6, "screen": 1}
 #   OUTBID ที่ ratio <= ระดับ -> ระดับ -= OUTBID_DOWN · สูงกว่าระดับแล้วพลาด (กระสอบทดลอง) -> ไม่เปลี่ยน
 # เพดานลับสุ่มต่อ RFQ (พิสูจน์เกม 3) -> ระดับจะหยุดตรงที่ขายได้ราว UP/(UP+DOWN) = 75% ของครั้ง
 UP, DOWN, OUTBID_DOWN = 0.01, 0.03, 0.02   # OUTBID 0.01 -> 0.02 (18 พ.ย.: แพ้คนถูกกว่าบ่อย ช่องเสนอมีจำกัด ต้องปรับเร็ว)
+CLEAN_RAISE = True                    # v4 (19 พ.ย.): ขึ้นราคาเฉพาะเมื่อราคาหลักของผู้ซื้อรายนั้นไม่แพ้เลยในรอบก่อน
 PROBE_UP = 0.02                       # กระสอบทดลอง 1 ใบ/ผู้ซื้อ/รอบ ที่ ระดับ + PROBE_UP (รอบสุดท้ายไม่ทดลอง)
 LLM_MAX_ADJUST = 0.03                 # (ไม่ใช้แล้ว: LLM เลือกคำ ดู ACTION_DELTA) เก็บไว้ให้เทสเก่า
 # (A) กระจายความเสี่ยง: ผู้ซื้อ 1 รายได้ไม่เกินสัดส่วนนี้ของกระสอบที่เสนอในรอบ (เกม 5–6: ทุ่มให้รายเดียวแล้วโดนปฏิเสธทั้งรอบ)
@@ -54,11 +56,22 @@ FILL_CAPACITY = True        # เสนอให้เต็มลิมิต�
 BEHIND_AT, BEHIND_DOWN = 0.7, 0.02   # ของเหลือ > 70% ของ (ลิมิต/รอบ × รอบที่เหลือ) -> ลดราคาเพิ่ม 0.02 ให้ขายทัน
 
 # ---- v3 (หลังด่าน 2 ได้อันดับ 24: R1 และ R5 ขายไม่ได้เลย เพราะขึ้นราคาซ้อนกันหลังรอบที่ขายหมด) ----
-MOVE_UP, MOVE_DOWN = 0.02, 0.04       # (1)(3) ตัวคูณหลักต่อผู้ซื้อ ขยับจากรอบก่อนได้ไม่เกิน +0.02 / -0.04 รวมทุกกฎ + LLM
+# (1)(3) ตัวคูณหลักต่อผู้ซื้อ ขยับจากรอบก่อนได้ไม่เกิน +MOVE_UP / -MOVE_DOWN รวมทุกกฎ + LLM
+MOVE_UP = 0.02
+MOVE_DOWN = 0.04
 LAST_MOVE_DOWN = 0.06                 #        รอบสุดท้ายลดได้ถึง -0.06 (ต้องเทของ)
 MARKET_CAP = True                     # (2) ไม่เสนอแพงกว่าราคาสูงสุดที่ผู้ซื้อรายนี้ซื้อรอบก่อน (เมื่อรอบก่อนเขาได้ของครบ = มีคนแย่ง)
 MARKET_CAP_MARGIN, MARKET_CAP_MAX_CUT = 0.005, 0.04   #     ต่ำกว่าราคานั้น 0.5% · ตัดลงได้ไม่เกิน 0.04 ของตัวคูณ (กันขายถูกเกิน)
-PRACTICE_LADDER = (0.0, 0.04, -0.03, 0.08)   # (4) รอบซ้อม (ไม่นับคะแนน ไม่ตัดสต็อก): เสนอหลายราคา กระสอบละราคา เพื่อหาเพดาน
+PRACTICE_LADDER = (0.0, 0.04, -0.03, 0.08)
+# ---- ปุ่มปรับกลางเกม (สไลด์ 20: แก้ค่าตั้งแล้วรีสตาร์ท agent ได้ตลอด) · ตั้งใน .env แล้วรีสตาร์ท · ไม่ตั้ง = ค่าเดิม ----
+#   KNOB_MAX_SPECIALTY / KNOB_MAX_COMMERCIAL / KNOB_MAX_INSTANT = เพดานตัวคูณของผู้ซื้อประเภทนั้น (เช่น 1.02)
+#   KNOB_MOVE_UP = ขึ้นราคาได้ต่อรอบ (0 = ไม่ขึ้นเลย) · KNOB_FESTIVAL_HOLD = 1/0 เก็บล็อตเกรด Specialty ไว้ช่วงเทศกาล
+# (5) FESTIVAL_HOLD: ก่อนเทศกาล ล็อตที่เข้าสเปก Specialty ขายให้ Specialty เท่านั้น (เก็บไว้ขายช่วงเทศกาล/หลังเทศกาลได้อีก)
+# ---- ค่าที่ tools/autofix.py แก้ได้ (บรรทัดละค่า ห้ามย้ายรูปแบบ) · ค่าในโค้ด = ค่าเริ่มต้น · ปุ่มใน .env ทับได้เฉพาะเมื่อตั้งไว้ ----
+# (บั๊กเดิมถึง 19 พ.ย.: apply_knobs ทับค่าในโค้ดทุกรอบ แก้ค่าในโค้ดจึงไม่มีผล)
+KNOB_MAX = {}
+FESTIVAL_HOLD = True
+_CODE_KNOBS = (MOVE_UP, FESTIVAL_HOLD, dict(KNOB_MAX))
 
 
 @dataclass
@@ -107,6 +120,52 @@ def calendar_weight(state: dict, ctx: Context) -> float:
         return 1.0
 
 
+def calendar_weights(ctx: Context) -> dict:
+    """รอบ -> demand_weight จากปฏิทิน (ไม่มีข้อมูล = 1.0)"""
+    weight = {}
+    try:
+        for row in ctx.calendar or []:
+            a, _, b = str(row["rounds"]).partition("-")
+            for n in range(int(a), int(b or a) + 1):
+                weight[n] = float(row.get("demand_weight") or 1.0)
+    except (KeyError, TypeError, ValueError):
+        return {}
+    return weight
+
+
+def effective_rounds_left(state: dict, ctx: Context) -> float:
+    """(6) รอบที่เหลือถ่วงด้วยความต้องการ: ช่วงใกล้ปิดตลาดที่ความต้องการต่ำนับเป็นไม่ถึง 1 รอบ"""
+    if state["round"]["kind"] == "practice":
+        return float(rounds_left(state, ctx))
+    w, now, total = calendar_weights(ctx), state["round"]["number"], ctx.rules["timeline"]["rounds"]
+    return sum(min(w.get(n, 1.0), 1.0) for n in range(now, total + 1))
+
+
+def festival_rounds(ctx: Context) -> set:
+    """(5) รอบเทศกาลจากปฏิทิน: ป้ายมีคำว่า เทศกาล หรือ specialty_share สูงกว่ารอบอื่น"""
+    rows, out = ctx.calendar or [], set()
+    try:
+        shares = [float(r["specialty_share"]) for r in rows if r.get("specialty_share") is not None]
+        for row in rows:
+            sh = row.get("specialty_share")
+            if "เทศกาล" in str(row.get("label", "")) or (sh is not None and len(shares) > 1 and float(sh) == max(shares) > min(shares)):
+                a, _, b = str(row["rounds"]).partition("-")
+                out.update(range(int(a), int(b or a) + 1))
+    except (KeyError, TypeError, ValueError):
+        return set()
+    return out
+
+
+def pre_festival(state: dict, ctx: Context) -> bool:
+    rnd, fest = state["round"], festival_rounds(ctx)
+    return bool(FESTIVAL_HOLD and fest and rnd["kind"] != "practice" and rnd["number"] < min(fest))
+
+
+def specialty_grade(lot: dict, rfqs: list[dict]) -> bool:
+    """ล็อตนี้เข้าสเปกผู้ซื้อ Specialty สักรายในรอบนี้"""
+    return any(r["buyer_type"] == "SPECIALTY" and spec_ok(lot["sample"], r["spec"], SPEC_MARGIN) for r in rfqs)
+
+
 def instant_only(lot: dict, rfqs: list[dict]) -> bool:
     """ล็อตนี้ผ่านสเปกแค่ RFQ ของ Instant (รอบนี้)"""
     types = {r["buyer_type"] for r in rfqs if spec_ok(lot["sample"], r["spec"], SPEC_MARGIN)}
@@ -120,8 +179,8 @@ def sell_budget(state: dict, ctx: Context) -> dict[str, int]:
     for lot in state["lots"]:
         avail = lot["kg_available"] // BAG * BAG
         pace = PACE_INSTANT_ONLY if instant_only(lot, state["rfqs"]) else PACE
-        if 1 < left <= PRE_FLOOD_ROUNDS:
-            pace = max(pace, PACE_PRE_FLOOD)
+        if 1 < left <= PRE_FLOOD_ROUNDS and calendar_weights(ctx).get(state["round"]["number"], 1.0) >= 1.0:
+            pace = max(pace, PACE_PRE_FLOOD)        # (6) ช่วงความต้องการต่ำ (ใกล้ปิดตลาด) ไม่เร่ง: ควรขายเสร็จก่อนหน้านั้น
         share = avail if left <= 1 else math.ceil(avail / left * pace * cal * ctx.volume / BAG) * BAG
         out[lot["lot_id"]] = min(avail, max(BAG, share)) if avail >= BAG else 0
     room = state.get("capacity_left_kg")
@@ -141,7 +200,7 @@ def behind_schedule(state: dict, ctx: Context) -> bool:
     if not cap or left <= 1:
         return False
     stock = sum(l["kg_remaining"] for l in state["lots"])
-    return stock > BEHIND_AT * cap * left
+    return stock > BEHIND_AT * cap * effective_rounds_left(state, ctx)     # (6) ถ่วงด้วยความต้องการที่เหลือ
 
 
 def stricter_or_same(a: dict, b: dict) -> bool:
@@ -179,11 +238,17 @@ def near_edge(sample: dict, spec: dict) -> bool:
 def candidates(state: dict, ctx: Context) -> list[dict]:
     budget = sell_budget(state, ctx)
     failed, passed = spec_history(state, ctx.memory)
+    hold = pre_festival(state, ctx) and not behind_schedule(state, ctx)
+    if hold:
+        ctx.notes.append("festival ahead: specialty-grade lots offered to SPECIALTY only")
     out = []
     for lot in state["lots"]:
         if budget[lot["lot_id"]] < BAG:
             continue
+        keep = hold and specialty_grade(lot, state["rfqs"])           # (5) เก็บไว้ขายช่วงเทศกาล
         for rfq in state["rfqs"]:
+            if keep and rfq["buyer_type"] != "SPECIALTY":
+                continue
             bad = failed.get(lot["lot_id"], [])
             if any(f.get("buyer") == rfq["buyer"] or ("max_defect_pct" in f and stricter_or_same(rfq["spec"], f))
                    for f in bad):
@@ -210,13 +275,21 @@ def buyer_levels(memory) -> dict:
         sent = {(o["rfq_id"], o["lot_id"]): o for o in memory.sent.get(rnd["round_id"], [])}
         practice = rnd.get("kind") == "practice"
         start = {b: v["level"] for b, v in out.items()}             # ระดับต้นรอบ: ขายได้หลายกระสอบในรอบเดียวก็ขึ้นไม่เกิน MOVE_UP
+        lost = set()                                                # v4: ผู้ซื้อที่ราคาหลักของเราแพ้ในรอบนี้ → รอบนี้ไม่ขึ้นราคา
+        if CLEAN_RAISE and not practice:
+            for o in rnd.get("my_offers", []):
+                s, bt = sent.get((o["rfq_id"], o["lot_id"])), info.get(o["rfq_id"])
+                if s and bt and o["status"] in ("OUTBID", "ABOVE_LIMIT") and s["markup"] <= start.get(bt[0], MARKUP.get(bt[1], 1.0)) + 1e-9:
+                    lost.add(bt[0])
         for o in rnd.get("my_offers", []):
             s, bt = sent.get((o["rfq_id"], o["lot_id"])), info.get(o["rfq_id"])
             if not s or not bt or bt[1] not in MARKUP:
                 continue
             k = out.setdefault(bt[0], {"level": MARKUP[bt[1]], "type": bt[1], "hist": []})
             m, lv = s["markup"], k["level"]
-            if o["status"] in ("ACCEPTED", "PARTIAL") and m >= lv - 1e-9:
+            if o["status"] in ("ACCEPTED", "PARTIAL") and m >= lv - 1e-9 and bt[0] in lost:
+                pass                                                # v4: ขายได้บางส่วนแต่ราคาหลักแพ้ = อยู่ที่ขอบตลาดแล้ว คงราคา
+            elif o["status"] in ("ACCEPTED", "PARTIAL") and m >= lv - 1e-9:
                 k["level"] = max(lv, m) if practice else max(lv, min(m + UP, start.get(bt[0], MARKUP[bt[1]]) + MOVE_UP))
             elif o["status"] == "ABOVE_LIMIT" and m <= lv + 1e-9:
                 k["level"] = m - DOWN
@@ -326,6 +399,11 @@ def rule_plan(state: dict, ctx: Context, cands: list[dict], adjust: dict | None 
             if new != safe:
                 ctx.notes.append(f"move cap {b[:12]} {safe:.3f}->{new:.3f}")
                 price[b] = (new, round(new + PROBE_UP, 3) if probe is not None else None)
+    for c in cands:                                                    # ปุ่มปรับ: เพดานตัวคูณต่อประเภทผู้ซื้อ
+        top = KNOB_MAX.get(c["buyer_type"])
+        if top is not None and c["buyer"] in price and price[c["buyer"]][0] > top:
+            safe, probe = price[c["buyer"]]
+            price[c["buyer"]] = (round(top, 3), round(min(probe, top + PROBE_UP), 3) if probe is not None else None)
     mcap = market_price_cap(ctx.memory) if MARKET_CAP and not practice else {}
 
     def capped(c, markup):                                                # (2) ไม่แพงกว่าราคาที่ตลาดเพิ่งซื้อ
@@ -518,8 +596,45 @@ def guard(state: dict, ctx: Context, plan: list[dict]) -> list[dict]:
     return offers
 
 
+def apply_knobs(ctx: Context) -> None:
+    """อ่านปุ่มปรับจาก environment (.env) · ค่าผิดรูปแบบหรือเกินช่วง = ไม่ใช้ และบันทึกใน notes"""
+    global MOVE_UP, FESTIVAL_HOLD
+    code_move_up, code_hold, code_max = _CODE_KNOBS      # ค่าในโค้ด = ค่าเริ่มต้นเมื่อไม่ได้ตั้งปุ่ม
+    used = []
+    for t in ("SPECIALTY", "COMMERCIAL", "INSTANT"):
+        v = os.environ.get(f"KNOB_MAX_{t}", "").strip()
+        KNOB_MAX.pop(t, None)
+        if t in code_max:
+            KNOB_MAX[t] = code_max[t]
+        if not v:
+            continue
+        try:
+            x = float(v)
+            if not MIN_MARKUP <= x <= MAX_MARKUP:
+                raise ValueError(v)
+            KNOB_MAX[t] = x; used.append(f"max_{t.lower()}={x}")
+        except ValueError:
+            ctx.notes.append(f"knob ignored KNOB_MAX_{t}={v!r}")
+    v = os.environ.get("KNOB_MOVE_UP", "").strip()
+    try:
+        MOVE_UP = code_move_up if not v else float(v)
+        if not 0.0 <= MOVE_UP <= 0.05:
+            raise ValueError(v)
+        if v:
+            used.append(f"move_up={MOVE_UP}")
+    except ValueError:
+        MOVE_UP = code_move_up; ctx.notes.append(f"knob ignored KNOB_MOVE_UP={v!r}")
+    v = os.environ.get("KNOB_FESTIVAL_HOLD", "").strip()
+    FESTIVAL_HOLD = code_hold if not v else v not in ("0", "false", "False", "no")
+    if v:
+        used.append(f"festival_hold={int(FESTIVAL_HOLD)}")
+    if used:
+        ctx.notes.append("knobs: " + " ".join(used))
+
+
 def decide(state: dict, ctx: Context) -> tuple[list[dict], str]:
     """Returns (offers, source): "llm-adjust" (LLM ปรับระดับ) หรือ "rules" (ขั้นบันไดล้วน)"""
+    apply_knobs(ctx)
     cands = candidates(state, ctx)
     if not cands:
         return [], "none"

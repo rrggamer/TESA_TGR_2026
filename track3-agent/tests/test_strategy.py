@@ -1,3 +1,4 @@
+import os
 """เทสออฟไลน์ของโค้ดจริงใน Coffee-TESA-starter (ไม่ต่อเน็ต ไม่ต้องลง pytest)
 
     python test_strategy.py          # ใช้ snapshot ล่าสุด (หรือ example.json)
@@ -365,6 +366,29 @@ def _mem(rounds, sent):
     m = FakeMemory(); m.rounds, m.sent = rounds, sent; return m
 
 
+@unittest.skipUnless(getattr(strategy, "CLEAN_RAISE", False), "v4 เท่านั้น")
+class TestV4CleanRaise(unittest.TestCase):
+    """19 พ.ย.: ราคาไต่ขึ้นทุกรอบที่ขายได้ แม้ราคาหลักบางข้อแพ้ -> ของค้าง ต้องเทลดราคาท้ายเกม"""
+    def _mem(self, lost_status):
+        summ = [{"rfq_id": "R4-1", "buyer": "C", "buyer_type": "COMMERCIAL", "wanted_kg": 600, "bought_kg": 600,
+                 "offers": 20, "price_min": 100.0, "price_max": 126.0, "price_avg": 115.0}]
+        sent = {"R4": [{"rfq_id": "R4-1", "lot_id": "L", "markup": 1.00}, {"rfq_id": "R4-1", "lot_id": "M", "markup": 1.00}]}
+        offers = [{"rfq_id": "R4-1", "lot_id": "L", "status": "ACCEPTED", "filled_kg": 60},
+                  {"rfq_id": "R4-1", "lot_id": "M", "status": lost_status, "filled_kg": 60 if lost_status == "ACCEPTED" else 0}]
+        return _mem([{"round_id": "R4", "kind": "real", "my_offers": offers, "market_summary": summ}], sent)
+
+    def test_hold_when_main_price_lost(self):
+        lv = strategy.buyer_levels(self._mem("OUTBID"))["C"]["level"]
+        self.assertLess(lv, 1.00 + 1e-9)                                       # ขายได้ 1 แพ้ 1 -> ไม่ขึ้น
+
+    def test_raise_when_all_sold(self):
+        lv = strategy.buyer_levels(self._mem("ACCEPTED"))["C"]["level"]
+        if strategy.MOVE_UP > 0 and strategy.CLEAN_RAISE:                     # autofix ตั้ง MOVE_UP=0 = ไม่ขึ้นเลย (ตั้งใจ)
+            self.assertGreater(lv, 1.00)
+        else:
+            self.assertLessEqual(lv, 1.00 + strategy.MOVE_UP + 0.01 + 1e-9)
+
+
 @unittest.skipUnless(hasattr(strategy, "move_limits"), "v3 เท่านั้น")
 class TestV3(unittest.TestCase):
     """บทเรียนด่าน 2: ขายหมดแล้วขึ้นราคาซ้อน (กฎ + กระสอบทดลอง + LLM) -> รอบถัดไปขายไม่ได้เลย"""
@@ -411,7 +435,8 @@ class TestV3(unittest.TestCase):
         plan = strategy.rule_plan(state, ctx, strategy.candidates(state, ctx), {"C": strategy.ACTION_DELTA["raise"]})
         for p in plan:
             self.assertLessEqual(p["markup"], 126.0 * (1 - strategy.MARKET_CAP_MARGIN) / 125.0 + 1e-9)
-        self.assertLessEqual(min(p["markup"] for p in plan), 1.00 + strategy.MOVE_UP + 1e-9)
+        # max(.., 0.02): ถ้า autofix ลด MOVE_UP (เช่น 0) แผนนี้เหลือแค่กระสอบทดลอง (+PROBE_UP ถูกเพดานตลาดตัด) -> ใช้เกณฑ์ค่าเดิม
+        self.assertLessEqual(min(p["markup"] for p in plan), 1.00 + max(strategy.MOVE_UP, 0.02) + 1e-9)
 
     def test_practice_ladder(self):
         lots = [{"lot_id": f"L{i}", "kg_total": 600, "kg_available": 600, "kg_remaining": 600,
@@ -426,6 +451,96 @@ class TestV3(unittest.TestCase):
         mk = sorted(p["markup"] for p in strategy.rule_plan(state, ctx, strategy.candidates(state, ctx)))
         self.assertEqual(len(set(mk)), len(mk))                                  # ทุกกระสอบคนละราคา
         self.assertGreater(mk[-1] - mk[0], 0.05)
+
+
+CAL20 = [{"rounds": "1-5", "label": "ปกติ", "demand_weight": 1.0, "specialty_share": 0.2},
+         {"rounds": "6-8", "label": "เทศกาลกาแฟ", "demand_weight": 1.2, "specialty_share": 0.4},
+         {"rounds": "9-12", "label": "ปกติ", "demand_weight": 1.0, "specialty_share": 0.2},
+         {"rounds": "13-14", "label": "ใกล้ปิดตลาด", "demand_weight": 0.6, "specialty_share": 0.2},
+         {"rounds": "15", "label": "รอบสุดท้าย", "demand_weight": 0.4, "specialty_share": 0.2}]
+
+
+@unittest.skipUnless(hasattr(strategy, "festival_rounds"), "v3 (ข้อ 5–6) เท่านั้น")
+class TestCalendar20(unittest.TestCase):
+    def _state(self, n, kind="real"):
+        good = {"lot_id": "G", "kg_total": 600, "kg_available": 600, "kg_remaining": 600,
+                "sample": {"defect_pct": 1.0, "moisture_pct": 10.5, "screen": 17}}
+        rfqs = [{"rfq_id": "S", "buyer": "s", "buyer_type": "SPECIALTY", "kg": 300, "bags": 5,
+                 "spec": {"max_defect_pct": 3, "max_moisture_pct": 12, "min_screen": 16}},
+                {"rfq_id": "C", "buyer": "c", "buyer_type": "COMMERCIAL", "kg": 600, "bags": 10,
+                 "spec": {"max_defect_pct": 6, "max_moisture_pct": 13, "min_screen": 14}}]
+        return {"market": "x", "phase": "ROUND_OPEN", "round": {"round_id": f"R{n}", "kind": kind, "number": n, "of": 15},
+                "lots": [good], "rfqs": rfqs, "capacity_left_kg": 300, "round_capacity_kg": 300}
+
+    def _ctx(self, cal=CAL20):
+        m = FakeMemory(); m.rounds, m.sent = [], {}
+        return strategy.Context({"timeline": {"rounds": 15}, "bag_kg": 60}, cal, {"G": 120.0}, __import__("random").Random(1), m, None, 300)
+
+    def test_festival_detected(self):
+        self.assertEqual(strategy.festival_rounds(self._ctx()), {6, 7, 8})
+        self.assertEqual(strategy.festival_rounds(self._ctx([{"rounds": "1-8", "label": "ปกติ", "demand_weight": 1.0, "specialty_share": None}])), set())
+
+    def test_hold_before_festival_only(self):
+        types = lambda n, kind="real": {c["buyer_type"] for c in strategy.candidates(self._state(n, kind), self._ctx())}
+        # ก่อนเทศกาล: ล็อตเกรด Specialty ขายให้ Specialty เท่านั้น · autofix ปิด FESTIVAL_HOLD = ขายได้ทุกราย
+        self.assertEqual(types(3), {"SPECIALTY"} if strategy.FESTIVAL_HOLD else {"SPECIALTY", "COMMERCIAL"})
+        self.assertEqual(types(7), {"SPECIALTY", "COMMERCIAL"})         # ช่วง/หลังเทศกาล ขายได้ทุกราย
+        self.assertEqual(types(10), {"SPECIALTY", "COMMERCIAL"})
+        self.assertEqual(types(1, "practice"), {"SPECIALTY", "COMMERCIAL"})   # รอบซ้อมไม่เก็บ
+        self.assertEqual({c["buyer_type"] for c in strategy.candidates(self._state(3), self._ctx([]))}, {"SPECIALTY", "COMMERCIAL"})
+
+    def test_effective_rounds_left(self):
+        self.assertAlmostEqual(strategy.effective_rounds_left(self._state(13), self._ctx()), 0.6 + 0.6 + 0.4)
+        self.assertAlmostEqual(strategy.effective_rounds_left(self._state(13), self._ctx([])), 3)   # ไม่มีปฏิทิน = นับรอบปกติ
+
+
+@unittest.skipUnless(hasattr(strategy, "apply_knobs"), "ปุ่มปรับ (v3) เท่านั้น")
+class TestKnobs(unittest.TestCase):
+    def tearDown(self):
+        for k in ("KNOB_MAX_COMMERCIAL", "KNOB_MOVE_UP", "KNOB_FESTIVAL_HOLD"):
+            os.environ.pop(k, None)
+        strategy.apply_knobs(strategy.Context({}, [], {}, None))
+
+    def test_defaults_and_bad_values(self):
+        ctx = strategy.Context({}, [], {}, None)
+        os.environ["KNOB_MOVE_UP"] = "abc"; os.environ["KNOB_MAX_COMMERCIAL"] = "5"
+        strategy.apply_knobs(ctx)
+        code = getattr(strategy, "_CODE_KNOBS", (0.02, True, {}))              # ค่าผิด -> กลับไปใช้ค่าในโค้ด
+        self.assertEqual(strategy.MOVE_UP, code[0])
+        self.assertEqual(strategy.KNOB_MAX.get("COMMERCIAL"), code[2].get("COMMERCIAL"))   # ไม่ใช่ 5
+        self.assertTrue(any("knob ignored" in n for n in ctx.notes))
+
+    def test_max_markup_applies(self):
+        os.environ["KNOB_MAX_COMMERCIAL"] = "0.95"; os.environ["KNOB_FESTIVAL_HOLD"] = "0"
+        lot = {"lot_id": "L", "kg_total": 600, "kg_available": 600, "kg_remaining": 600,
+               "sample": {"defect_pct": 2.0, "moisture_pct": 11.0, "screen": 16}}
+        rfq = {"rfq_id": "R1-1", "buyer": "C", "buyer_type": "COMMERCIAL", "kg": 600, "bags": 10,
+               "spec": {"max_defect_pct": 5, "max_moisture_pct": 12.5, "min_screen": 14}}
+        state = {"market": "x", "phase": "ROUND_OPEN", "round": {"round_id": "R1", "kind": "real", "number": 1, "of": 15},
+                 "lots": [lot], "rfqs": [rfq], "capacity_left_kg": 300, "round_capacity_kg": 300}
+        m = FakeMemory(); m.rounds, m.sent = [], {}
+        ctx = strategy.Context({"timeline": {"rounds": 15}, "bag_kg": 60}, [], {"L": 120.0}, __import__("random").Random(1), m, None, 300)
+        offers, _ = strategy.decide(state, ctx)
+        self.assertTrue(offers)
+        self.assertLessEqual(max(o["price_per_kg"] for o in offers), round((0.95 + strategy.PROBE_UP) * 120.0, 2))
+        self.assertFalse(strategy.FESTIVAL_HOLD)
+        self.assertTrue(any(n.startswith("knobs:") for n in ctx.notes))
+
+    @unittest.skipUnless(hasattr(strategy, "_CODE_KNOBS"), "ค่าในโค้ดเป็นค่าเริ่มต้น (20 พ.ย.)")
+    def test_code_constants_survive_without_env(self):
+        """แก้ค่าในโค้ด (autofix) โดยไม่มีปุ่มใน .env -> apply_knobs ต้องไม่ทับกลับเป็น 0.02/True/{}"""
+        saved = strategy._CODE_KNOBS
+        try:
+            strategy._CODE_KNOBS = (0.0, False, {"COMMERCIAL": 0.97})
+            strategy.apply_knobs(strategy.Context({}, [], {}, None))
+            self.assertEqual(strategy.MOVE_UP, 0.0)
+            self.assertFalse(strategy.FESTIVAL_HOLD)
+            self.assertEqual(strategy.KNOB_MAX, {"COMMERCIAL": 0.97})
+            os.environ["KNOB_MAX_COMMERCIAL"] = "1.01"                      # ปุ่มใน .env ยังทับได้
+            strategy.apply_knobs(strategy.Context({}, [], {}, None))
+            self.assertEqual(strategy.KNOB_MAX["COMMERCIAL"], 1.01)
+        finally:
+            strategy._CODE_KNOBS = saved
 
 if __name__ == "__main__":
     print("snapshot: p0 =", RULES["p0"], "| lots", len(STATE["lots"]), "| rfqs", len(STATE["rfqs"]))

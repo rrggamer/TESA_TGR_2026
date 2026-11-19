@@ -14,6 +14,12 @@ if "--real" in sys.argv:
 else:
     STARTER = PRACTICE if (PRACTICE / "strategy.py").exists() else REAL
 sys.path.insert(0, str(STARTER))
+import os  # noqa: E402
+if os.environ.get("TEST_STRATEGY_FILE"):         # เช่น TEST_STRATEGY_FILE=practice/strategy_v4.py -> เทสไฟล์ตัวเลือก
+    import importlib.util  # noqa: E402
+    _spec = importlib.util.spec_from_file_location("strategy", str(HERE / os.environ["TEST_STRATEGY_FILE"]))
+    _mod = importlib.util.module_from_spec(_spec); sys.modules["strategy"] = _mod; _spec.loader.exec_module(_mod)
+    print("strategy จาก:", os.environ["TEST_STRATEGY_FILE"])
 print("โค้ดที่เทส:", STARTER.name if STARTER == REAL else "tests/practice (ตัวซ้อม)")
 try:
     sys.stdout.reconfigure(encoding="utf-8")   # ให้ print ภาษาไทยบน Windows ได้

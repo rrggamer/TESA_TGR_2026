@@ -4,6 +4,7 @@
     python main.py --forever    # sandbox: keep playing game after game
 """
 import hashlib
+import importlib.util
 import json
 import os
 import random
@@ -50,6 +51,37 @@ def log(event: str, **data) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
     short = {k: v for k, v in data.items() if k not in ("offers", "notes")}
     print(row["time"][11:], event, json.dumps(short, ensure_ascii=False)[:160], flush=True)
+
+
+_STRATEGY_PATH = Path(strategy.__file__)
+_strategy_mtime = _STRATEGY_PATH.stat().st_mtime
+
+
+def reload_strategy() -> None:
+    """Pick up edits to strategy.py between rounds without restarting (memory, log and offers are untouched).
+    The new file is loaded into a fresh module: if it fails to load, the old one keeps running."""
+    global strategy, _strategy_mtime
+    try:
+        m = _STRATEGY_PATH.stat().st_mtime
+    except OSError:
+        return
+    if m == _strategy_mtime:
+        return
+    _strategy_mtime = m                             # a broken file is tried once; the next save is tried again
+    try:
+        code = _STRATEGY_PATH.read_bytes()
+        spec = importlib.util.spec_from_file_location("strategy", _STRATEGY_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        for name in ("Context", "decide", "guard", "rule_plan", "candidates"):
+            if not hasattr(mod, name):
+                raise AttributeError(f"strategy.{name} missing")
+    except Exception as e:                          # noqa: BLE001 — keep the old strategy
+        log("strategy_reload_failed", error=repr(e)[:300])
+        return
+    strategy = mod
+    sys.modules["strategy"] = mod
+    log("strategy_reloaded", sha1=hashlib.sha1(code).hexdigest()[:10])
 
 
 def send_offers(api: Market, offers: list[dict]) -> list[dict]:
@@ -105,6 +137,7 @@ def play(api: Market, llm: LLM | None, forever: bool) -> None:
                 # would replace them (capacity_left_kg no longer counts them, so it would offer less)
                 log("round_already_sent", round=rid, n=len(state["my_open_offers"]))
                 continue
+            reload_strategy()
             ctx = strategy.Context(rules, info["calendar"], tv, rng, memory, llm, state["seconds_left"] or 999)
             t0 = time.time()
             try:

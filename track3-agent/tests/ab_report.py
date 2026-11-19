@@ -23,11 +23,23 @@ for ver, rf in rows:
     rev = json.loads((P / "autoplay" / rf).read_text(encoding="utf-8"))
     st_f = P / "autoplay" / rf.replace("reveal-", "states-")
     states = json.loads(st_f.read_text(encoding="utf-8")) if st_f.exists() else []
+    if not states:
+        continue
+    want = {(q["rfq_id"], q["buyer"]) for q in states[0]["rfqs"]}       # จับคู่ memory กับเกมด้วยชุด RFQ ของ R1 (ไม่ใช้เวลาไฟล์)
+    def ok(m):                                                           # memory ของเกมนี้จริง: ผลทุกรอบเป็นข้อเสนอที่เราส่งเอง
+        return (m["rounds"] and m["rounds"][0]["round_id"] == "R1"
+                and {(x["rfq_id"], x["buyer"]) for x in m["rounds"][0]["market_summary"]} == want
+                and all({(o["rfq_id"], o["lot_id"]) for o in r["my_offers"]} <= {(o["rfq_id"], o["lot_id"]) for o in m["sent"].get(r["round_id"], [])} for r in m["rounds"]))
+    found = []
+    for mf in glob.glob(str(P / "memory-sandbox-*.json")) + glob.glob(str(P / "old_memory" / "**" / "memory-sandbox-*.json"), recursive=True):
+        m = json.loads(Path(mf).read_text(encoding="utf-8"))
+        if ok(m):
+            found.append((os.path.getmtime(mf), m))
+    if not found:
+        print("ข้าม", rf, "(เข้ากลางเกม หรือ memory ไม่ตรงกับเกม)")
+        continue
     t = os.path.getmtime(P / "autoplay" / rf)
-    mf = min(glob.glob(str(P / "memory-sandbox-*.json")), key=lambda f: abs(os.path.getmtime(f) - t))
-    mem = json.loads(Path(mf).read_text(encoding="utf-8"))
-    if not states or not mem["rounds"] or mem["rounds"][0]["round_id"] != "R1":
-        continue                                                     # เข้ากลางเกม -> ไม่นับ
+    mem = min(found, key=lambda x: abs(x[0] - t))[1]
     kg = {l["lot_id"]: l["kg_total"] for l in states[0]["lots"]}
     tvt = {l["lot_id"]: l["true_value_per_kg"] for l in rev["lots"]}
     rev_lot, sold = collections.Counter(), collections.Counter()
