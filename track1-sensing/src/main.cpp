@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <algorithm>
 #include <math.h>
+#include <esp_timer.h>
 #include <soc/gpio_reg.h>
 
 // ============================================================
@@ -31,9 +32,13 @@
 static const float CAL_SLOPE_PF_PER_US = 0.99835f;
 static const float CAL_OFFSET_PF       = -13.314f;
 
-// Moisture fit:  M[%] = MOIST_SLOPE * C[pF] + MOIST_OFFSET  (TODO: calibrate)
-static const float MOIST_SLOPE_PCT_PER_PF = 1.0f;
-static const float MOIST_OFFSET_PCT       = 0.0f;
+// Moisture calibration (2026-11-18): sensor box, copper facing out, middle slot
+// only, 5 presses per bag (no re-pour). Points sorted by C; straight lines
+// between them, end segments extended outside. The 7.7 % bag was ~30 g, the
+// others ~33 g. C values depend on CAL_SLOPE / CAL_OFFSET above - change those
+// and these points must be remeasured.
+static const float MOIST_CAL_PF[]  = {16.5072f, 27.5188f, 30.8248f};
+static const float MOIST_CAL_PCT[] = { 7.7f,    11.3f,    14.5f};
 
 // ============================================================
 //  HARDWARE
@@ -53,7 +58,13 @@ static const uint32_t SERIAL_BAUD = 9600;
 static const int      SAMPLE_COUNT  = 500;   // charge cycles averaged per result
 static const int      WARMUP_COUNT  = 10;    // discarded before sampling
 static const float    TRIM_FRACTION = 0.10f; // drop this share from each end
-static const uint32_t DISCHARGE_US  = 1000;  // >= 9 tau at 100 pF total
+static const uint32_t SAMPLE_PERIOD_US = 1000;  // one charge cycle every 1 ms
+static const uint32_t MAINS_HZ         = 50;    // Thai mains frequency
+
+// The sensor plates pick up mains hum. Spanning a whole number of mains cycles
+// (500 x 1 ms = 25 x 20 ms) makes that pickup average out to ~zero.
+static_assert((SAMPLE_COUNT * SAMPLE_PERIOD_US) % (1000000 / MAINS_HZ) == 0,
+              "sampling window must cover whole mains cycles");
 static const uint32_t DITHER_TICKS  = 240;   // polling-phase sweep, 1 us at 240 MHz
 static const uint32_t TIMEOUT_US    = 500;   // give up on a single charge
 static const uint32_t SETTLE_MS     = 200;   // let the hand move away first
@@ -138,11 +149,9 @@ static void buttonResync() {
 //  CAPACITANCE MEASUREMENT
 // ============================================================
 
-// One charge cycle. Returns ticks from CHARGE high to COMP low, 0 on failure.
+// One charge cycle from a discharged Cx. Returns ticks from CHARGE high to
+// COMP low, 0 on failure. Leaves CHARGE low so Cx discharges until the next call.
 static uint32_t IRAM_ATTR chargeOnce() {
-  REG_WRITE(GPIO_OUT_W1TC_REG, CHARGE_MASK);   // discharge Cx through R1
-  delayMicroseconds(DISCHARGE_US);
-
 #ifdef FAKE_TICKS
   return FAKE_TICKS;                            // bench test without a circuit
 #endif
@@ -182,13 +191,18 @@ static uint32_t IRAM_ATTR chargeOnce() {
 static Measurement measureCapacitance() {
   Measurement m = {};
 
-  for (int i = 0; i < WARMUP_COUNT; i++) chargeOnce();
-  failNotReady = failTimeout = 0;
-
+  // Charge cycles start on a fixed 1 ms grid; the rest of each slot discharges Cx.
+  REG_WRITE(GPIO_OUT_W1TC_REG, CHARGE_MASK);
+  int64_t next = esp_timer_get_time() + SAMPLE_PERIOD_US;
   int n = 0;
-  for (int i = 0; i < SAMPLE_COUNT; i++) {
+  for (int i = -WARMUP_COUNT; i < SAMPLE_COUNT; i++) {
+    while (esp_timer_get_time() < next) {
+    }
+    next += SAMPLE_PERIOD_US;
+
+    if (i == 0) failNotReady = failTimeout = 0;
     uint32_t t = chargeOnce();
-    if (t) samples[n++] = t;
+    if (i >= 0 && t) samples[n++] = t;
   }
   m.valid = n;
   if (n < SAMPLE_COUNT / 2) return m;          // circuit not responding
@@ -216,8 +230,14 @@ static Measurement measureCapacitance() {
   return m;
 }
 
+// Piecewise-linear lookup through the calibration points.
 static float moisturePercent(float pF) {
-  return MOIST_SLOPE_PCT_PER_PF * pF + MOIST_OFFSET_PCT;
+  const int n = sizeof(MOIST_CAL_PF) / sizeof(MOIST_CAL_PF[0]);
+  int i = 1;
+  while (i < n - 1 && pF > MOIST_CAL_PF[i]) i++;
+  const float slope = (MOIST_CAL_PCT[i] - MOIST_CAL_PCT[i - 1]) /
+                      (MOIST_CAL_PF[i] - MOIST_CAL_PF[i - 1]);
+  return MOIST_CAL_PCT[i - 1] + slope * (pF - MOIST_CAL_PF[i - 1]);
 }
 
 // ============================================================
@@ -249,8 +269,9 @@ static void printCalibration(const Measurement &m, uint32_t elapsedMs) {
     Serial.printf("FAIL: not-ready=%d timeout=%d\r\n", failNotReady, failTimeout);
     return;
   }
-  Serial.printf("t=%.4f us  sd=%.4f us  min=%.3f  max=%.3f  C=%.3f pF  (%lu ms)\r\n",
-                m.meanUs, m.sdUs, m.minUs, m.maxUs, m.pF, (unsigned long)elapsedMs);
+  Serial.printf("t=%.4f us  sd=%.4f us  min=%.3f  max=%.3f  C=%.3f pF  M=%.2f %%  (%lu ms)\r\n",
+                m.meanUs, m.sdUs, m.minUs, m.maxUs, m.pF, moisturePercent(m.pF),
+                (unsigned long)elapsedMs);
 }
 
 // Static wiring check: hold CHARGE low, then high, and read COMP each time.

@@ -99,9 +99,11 @@ Per press-and-release:
 1. Software debounce (30 ms stable), fires on **release** only; presses during a measurement
    are discarded (`buttonResync()`).
 2. Wait 200 ms so the hand is away from the sensor.
-3. 10 warm-up + **500 charge cycles**: discharge 1 ms, then with interrupts off, set CHARGE
-   high and count CPU cycles (240 MHz, 4.17 ns/tick) until the comparator pulls COMP low.
-   500 µs timeout per cycle.
+3. 10 warm-up + **500 charge cycles on a fixed 1 ms grid** (500 ms = exactly 25 cycles of
+   50 Hz mains, so hum picked up by the sensor plates averages out). In each slot: with
+   interrupts off, set CHARGE high and count CPU cycles (240 MHz, 4.17 ns/tick) until the
+   comparator pulls COMP low; the rest of the slot discharges Cx. Polling start is dithered
+   over 1 µs to resolve below the ~30-cycle GPIO read time. 500 µs timeout per cycle.
 4. Sort, drop 10 % from each end, take the mean → `t` in µs.
 5. `C = CAL_SLOPE_PF_PER_US · t + CAL_OFFSET_PF` (theory with 1 MΩ and Vref = 0.632·Vcc:
    1 µs = 1 pF; replace with the fit from the 5/10/15/20 pF reference caps).
