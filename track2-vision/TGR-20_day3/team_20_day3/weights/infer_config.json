@@ -1,0 +1,12 @@
+{
+ "ncnn": "best_ncnn_model",
+ "cls_ncnn": null,
+ "conf": 0.1,
+ "iou": 0.7,
+ "min_keep": 0.5,
+ "mask_thr": 0.5,
+ "roi": true,
+ "max_det": 400,
+ "threads": 4,
+ "refine": false
+}

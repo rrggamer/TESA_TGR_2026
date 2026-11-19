@@ -1,0 +1,27 @@
+{
+  "team": "20",
+  "http": {
+    "base_url": "https://edgeai-tesa.c333m.site",
+    "token": "TODO",
+    "mode": "train",
+    "max_images": {
+      "train": 16,
+      "test": 5
+    },
+    "timeout": 60,
+    "retries": 3
+  },
+  "mqtt": {
+    "url": "wss://tesa-score.c333m.site/mqtt/",
+    "username": "TGR-20",
+    "password": "TODO",
+    "client_id": "TGR-20:device-1",
+    "topic": "/event/<TOKEN>/{track}/{event}",
+    "topic_vars": {
+      "track": "EdgeAI",
+      "event": "system-testing"
+    },
+    "qos": 1,
+    "keepalive": 60
+  }
+}

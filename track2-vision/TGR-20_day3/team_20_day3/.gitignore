@@ -1,0 +1,9 @@
+# secrets — ห้าม commit (ใช้ client_config.example.json เป็นแม่แบบ)
+client_config.json
+client_config.json.*
+# backups / runtime
+*.bak
+*.bak2
+test_data/
+__pycache__/
+*.zip
