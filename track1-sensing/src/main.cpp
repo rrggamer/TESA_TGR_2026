@@ -47,6 +47,15 @@ static const float CAL_OFFSET_PF       = -13.314f;
 static const float MOIST_SLOPE_PCT_PER_PF = 0.48468f;
 static const float MOIST_OFFSET_PCT       = -0.8334f;
 
+// Power-on tare (moisture builds): the empty-box C drifts with wiring and
+// surroundings (10.8-12.3 pF seen). At boot the box must be EMPTY; the firmware
+// measures it and subtracts the difference from EMPTY_REF_PF. A reading outside
+// the plausible empty range (beans already in the box) is ignored.
+static const float    EMPTY_REF_PF   = 11.103f;  // empty box during calibration
+static const float    TARE_MIN_PF    = 9.5f;
+static const float    TARE_MAX_PF    = 13.5f;    // 7.7 % beans read ~17.6 pF
+static const uint32_t TARE_DELAY_MS  = 2000;     // let hands move away after plugging in
+
 // ============================================================
 //  HARDWARE
 // ============================================================
@@ -87,6 +96,7 @@ static int          failNotReady = 0;   // COMP already low before charging
 static int          failTimeout  = 0;   // COMP never went low while charging
 static uint32_t     ticksPerUs = 240;
 static uint32_t     samples[SAMPLE_COUNT];
+static float        tareOffsetPf = 0.0f;   // set at boot in moisture builds
 
 struct Measurement {
   bool  ok;
@@ -238,7 +248,7 @@ static Measurement measureCapacitance() {
 }
 
 static float moisturePercent(float pF) {
-  return MOIST_SLOPE_PCT_PER_PF * pF + MOIST_OFFSET_PCT;
+  return MOIST_SLOPE_PCT_PER_PF * (pF - tareOffsetPf) + MOIST_OFFSET_PCT;
 }
 
 // ============================================================
@@ -345,6 +355,18 @@ void setup() {
   neopixelWrite(LED_PIN, 0, 0, 0);
 
   ticksPerUs = getCpuFrequencyMhz();
+
+#if OUTPUT_MOISTURE
+  delay(TARE_DELAY_MS);
+  const Measurement empty = measureCapacitance();
+  const bool tareOk = empty.ok && empty.pF >= TARE_MIN_PF && empty.pF <= TARE_MAX_PF;
+  if (tareOk) tareOffsetPf = empty.pF - EMPTY_REF_PF;
+#if SHOW_C
+  Serial.printf("TARE  empty=%.2f pF  offset=%+.2f pF  %s\r\n", empty.pF, tareOffsetPf,
+                tareOk ? "applied" : "rejected (box not empty?)");
+#endif
+#endif
+
   buttonResync();
 
 #if CAL_MODE
